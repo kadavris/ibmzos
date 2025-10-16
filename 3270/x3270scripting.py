@@ -48,41 +48,58 @@ class x3270Script:
 
     def debug_level(self, level: int) -> None:
         if level < 0:
-            self.debug = 0
+            self.__debug = 0
         elif level > 9:
-            self.debug = 9
+            self.__debug = 9
         else:
-            self.debug = level
+            self.__debug = level
 
     #####################################################################
     def connected(self) -> bool:
-        if not self.sock:
+        if not self.__sock:
             return False
 
         try:
-            self.sock.sendall(b"\r\n")
+            self.__sock.sendall(b"\r\n")
         except socket.error:
             return False
 
-        return True
+        if 'connected' in self.__last_status and self.__last_status['connected'] == 'Y':
+            return True
+
+        return False
 
     #####################################################################
     def connect(self, port: int = 3270, host: str = '127.0.0.1') -> bool:
         """
-        Connects to terminal scription port
+        Connects to a terminal scripting port
         """
-        self.host = host
-        self.port = port
+        # sanity check:
+        if self.__host != host or self.__port != port:
+            if self.connected():
+                try:
+                    self.__sock.close()
+                except socket.error as se:
+                    print(f"x3270 Socket closing problem {se}", file=sys.stderr)
+
+        if not self.__sock:
+            try:
+                self.__sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            except socket.error as se:
+                print(f"x3270 Socket error {se}", file=sys.stderr)
+                return False
+
         try:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.connect((host, port))
+            self.__sock.connect((host, port))
         except socket.error as se:
             print(f"x3270 Connection error to {host}:{port} - {se}", file=sys.stderr)
             return False
 
-        if self.debug > 0:
+        if self.__debug > 0:
             print(". x3270: Connected")
 
+        self.__host = host
+        self.__port = port
         return True
 
     # --- Low-Level Communication Functions ---
@@ -93,21 +110,114 @@ class x3270Script:
         :param cmd: command text
         :return: bool: success
         """
-        if not self.sock:
+        if not self.__sock:
             print("!ERROR: x3270: socket is not connected yet", file=sys.stderr)
             return False
 
         b = cmd.encode('ascii') + b"\r\n"
         try:
-            self.sock.sendall(b)
+            self.__sock.sendall(b)
         except socket.error as se:
             print(f"!ERROR: x3270: socket: {se}", file=sys.stderr)
             return False
 
-        if self.debug > 4:
+        if self.__debug > 4:
             # Use repr() to show control characters clearly
             print("> x3270 sent: " + repr(b.decode('ascii').strip()))
 
+        return True
+
+    #####################################################################
+    def __process_status(self, statstr: str) -> bool:
+        """
+        Will parse the common status line into a useful dictionary
+        Parsed data is saved as self.last_status
+        """
+
+        errors = ''  # we'll store the problems if any
+        #  The status message consists of 12 blank-separated fields:
+        parsed = statstr.strip().split()
+        if len(parsed) != 12:
+            return False
+
+        # templates for automatic validations
+        tpl = [
+            # 0: Keyboard State
+            # 'U' - If the keyboard is unlocked
+            # 'L' - If the keyboard is locked waiting for a response from the host, or if not connected to a host
+            # 'E' - If the keyboard is locked because of an operator error (field overflow, protected field, etc.)
+            ['keylock', 'ULE'],
+            # 1: Screen Formatting
+            # 'F' - If the screen is formatted
+            # 'U' - If un-formatted or in NVT mode
+            ['formatting', 'FU'],
+            # 2: Field Protection
+            # 'P' - If the field containing the cursor is protected
+            # 'U' - If not or un-formatted
+            ['protected', 'PU'],
+            [], # 3 - skip here
+            # 4: Emulator Mode
+            # 'I' - If connected in 3270 mode
+            # 'L' - If connected in NVT line mode
+            # 'C' - If connected in NVT character mode
+            # 'P' - If connected in un-negotiated mode (no BIND active from the host)
+            # 'N' - If not connected
+            ['mode', 'ILCPN']
+        ]
+
+        for fi in range(5):
+            if fi == 3: continue
+
+            if parsed[fi] not in tpl[fi][1]:
+                errors += ',' + tpl[fi][0]
+                self.__last_status[tpl[fi][0]] = ' '
+            else:
+                self.__last_status[tpl[fi][0]] = parsed[0]
+
+        # 3: Connection State
+        #    If connected to a host, contains the string 'C(hostname)'. Otherwise, the letter 'N'.
+        if parsed[3] == 'N':
+            self.__last_status['connected'] = parsed[3]
+            self.__last_status['host'] = ''
+        else:
+            self.__last_status['connected'] = 'Y'
+            self.__last_status['host'] = self.__last_status['connstate'][2:-1]  # saving just in case
+
+        # 5: Model Number (2-5)
+        self.__last_status['model'] = parsed[5]
+
+        # 6: Number of Rows
+        #    The current number of rows defined on the screen. The host can request that the emulator use a 24x80 screen,
+        #    so this number may be smaller than the maximum number of rows possible with the current model.
+        self.__last_status['rows'] = int(parsed[6]) if parsed[6].isdigit() else -1
+
+        # 7: Number of Columns
+        #    The current number of columns defined on the screen, subject to the same difference for rows, above.
+        self.__last_status['cols'] = int(parsed[7]) if parsed[7].isdigit() else -1
+
+        # 8: Cursor Row
+        #    The current cursor row (zero-origin).
+        self.__last_status['currow'] = int(parsed[8]) if parsed[8].isdigit() else -1
+
+        # 9 Cursor Column
+        #  The current cursor column (zero-origin).
+        self.__last_status['curcol'] = int(parsed[9]) if parsed[9].isdigit() else -1
+
+        # 10: Window ID
+        #     The X window identifier for the main x3270 window, in hexadecimal preceded by 0x. For ws3270 and wc3270, this is zero.
+        self.__last_status['winid'] = parsed[10]
+
+        # 11: Command Execution Time
+        #  The time that it took for the host to respond to the previous command,
+        #  in seconds with milliseconds after the decimal.
+        #  If the previous command did not require a host response, this is a dash.
+        self.__last_status['time'] = -1 if parsed[11] == '-' else parsed[11]
+
+        if errors:
+            print("x3270.process_status:", errors, file=sys.stderr)
+            return False
+
+        self.__last_status = self.__last_status
         return True
 
     #####################################################################
@@ -120,15 +230,17 @@ class x3270Script:
         answer: List[str] = []
         line = b''
 
-        if not self.sock:
+        if not self.__sock:
             print("!ERROR: x3270: socket is not connected yet", file=sys.stderr)
             return answer
 
-        # Read continuously until plain 'ok' or 'error' is received
+        stage = 'data'
+        # The answer may contain a bunch of "data: " prefixed lines,
+        # then multi-fielded status line, and finally 'ok' or 'error'
         while True:
             try:
                 # Read one byte at a time until EOL ([CR]LF) is found
-                c = self.sock.recv(1)  # Should be mildly ineffective, but we'll see
+                c = self.__sock.recv(1)  # Should be mildly ineffective, but we'll see
             except (socket.error, EOFError) as se:
                 print(f"!ERROR: x3270: socket: {se}", file=sys.stderr)
                 # Add partial line if it exists before returning
@@ -145,16 +257,22 @@ class x3270Script:
 
             # got a complete line here. May be empty
             decoded_line = line.decode('ascii', errors='ignore')
+            if self.__debug > 5:
+                print("<<<x3270: '" + decoded_line + "'")
 
-            if decoded_line[0:6] == "data: ":
-                decoded_line = decoded_line[6:]
-                answer.append(decoded_line)
+            if stage == 'data':
+                if decoded_line[0:6] == "data: ":
+                    answer.append(decoded_line[6:])
+                else:
+                    stage = 'status'  # expect status lines
 
-                if self.debug >= 5:
-                    print("<<<x3270: ", decoded_line)
-            else:  # status line
+            elif stage == 'status':  # should be terminal status string
+                self.__process_status(decoded_line)
+                stage = 'final'
+
+            else:  # command execution status
                 if decoded_line == "ok" or decoded_line == "error":
-                    if self.debug:
+                    if self.__debug <= 5:
                         print(f"< x3270 terminal reply status: '{decoded_line}'")
 
                     answer.append(decoded_line)
@@ -188,8 +306,8 @@ class x3270Script:
         :param cmd: The command text to send to the terminal.
         :return: terminal's or remote answer
         """
-        if self.debug:
-            print(f". x3270 simple_cmd('{cmd}')")
+        if self.__debug:
+            print(f". x3270 script_cmd('{cmd}')")
 
         self.wait_for_unlock()
         self.send_line(cmd)
@@ -208,11 +326,11 @@ class x3270Script:
         r = -1
         c = -1
         if a and a[-1] == 'ok':
-            # The first data line contains 'data: <rows> <cols>'
-            match = re.search(r'\s*(\d+)\s+(\d+)', a[0])
+            # The first line of answer should contain 'data: <rows> <cols>'
+            match = re.search(r'(\d+)\s+(\d+)', a[0])
             if match:
                 r, c = int(match.group(1)), int(match.group(2))
-                if self.debug:
+                if self.__debug:
                     print(f". x3270 Screen size: {r}x{c}")
             else:
                 print(f"x3270: Error parsing screen size response: {a[0]}", file=sys.stderr)
@@ -236,7 +354,9 @@ class x3270Script:
         if r == -1:
             return screen
 
-        self.send_line("Ascii")
+        self.send_line("Snap(Save)")
+        self.wait_for_unlock()
+        self.send_line("Snap(Ascii)")
 
         a = self.read_answer()
 
@@ -255,24 +375,26 @@ class x3270Script:
         return screen
 
     #####################################################################
-    def find_text(self, txt: str) -> Tuple[int, int]:
+    def find_text(self, txt: str, xIsAfter: bool = False) -> Tuple[int, int]:
         """
-        Will find (regexp) data on screen, returning row,col tuple of the beginning
-        -1, -1 if not found
+        Will find (regexp) data on screen, returning row,col tuple of the beginning of found text
+        -1, -1 if not found. If xIsAfter is True then cols returned position after the text
         """
         screen = self.get_screen_content()
         r, c = self.get_screen_size()
 
         from_zero_col = True if txt[0] == '^' else False
+        if xIsAfter:
+            txt = '(' + txt + ')'
 
         y = 0
         while y != r:
             if from_zero_col:
-                if re.search(txt,  screen[y]):
-                    return y, 0
+                if m := re.search(txt, screen[y]):
+                    return y, len(m.group(1)) if xIsAfter else 0
             else:
                 if m := re.search(r'(.+?)' + txt, screen[y]):
-                    return y, len(m.group(0))
+                    return y, len(m.group(1)) + (len(m.group(2)) if xIsAfter else 0)
 
             y += 1
 
@@ -299,10 +421,11 @@ class x3270Script:
 
     #####################################################################
     def __init__(self, host, port):
-        self.sock: socket = None
-        self.host = ''
-        self.port = -1
-        self.debug: int = 0
+        self.__sock: socket = None
+        self.__host = ''
+        self.__port = -1
+        self.__debug: int = 0
+        self.__last_status = {}
         self.connect(port, host)
 
 
