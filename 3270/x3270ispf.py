@@ -15,16 +15,16 @@ from x3270scripting import x3270Script
 
 class x3270ISPF:
     def __init__(self, atermscript: x3270Script):
-        self.termscript: x3270Script = atermscript
-        self.debug: int = 0
+        self.__termscript: x3270Script = atermscript
+        self.__debug: int = 0
 
     def debug_level(self, level: int) -> None:
         if level < 0:
-            self.debug = 0
+            self.__debug = 0
         elif level > 9:
-            self.debug = 9
+            self.__debug = 9
         else:
-            self.debug = level
+            self.__debug = level
 
     def get_browse_header(self) -> Optional[Tuple[str, int, int, int, str]]:
         """
@@ -35,7 +35,7 @@ class x3270ISPF:
         3: right (max?) columns
         4: mode: BROWSE|EDIT
         """
-        screen = self.termscript.get_screen_content()
+        screen = self.__termscript.get_screen_content()
         if len(screen) < 3:
             return None
 
@@ -68,7 +68,7 @@ class x3270ISPF:
         """
         Issues a command on the Command ===> line.
         """
-        r, c = self.termscript.find_text(r'Command ===>')
+        r, c = self.__termscript.find_text(r'Command ===>')
 
         if r == -1:
             print("ispf.command(): Looks like we're not in ISPF here?", file=sys.stderr)
@@ -79,10 +79,10 @@ class x3270ISPF:
         # .  Command ===>                                                  Scroll ===> CSR   .
         # Pad the command with spaces to the end of the input field
 
-        self.termscript.script_cmd(f"MoveCursor({r},15)")
+        self.__termscript.script_cmd(f"MoveCursor({r},15)")
         command_str = command + (' ' * (48 - len(command)))
 
-        self.termscript.script_cmd(f'String "{command_str}\\n"')
+        self.__termscript.script_cmd(f'String "{command_str}\\n"')
 
         # TODO: need to detect syntax errors - yellow top right corner (requires checking screen attributes/colors?)
         return True
