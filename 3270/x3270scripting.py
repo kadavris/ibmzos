@@ -155,7 +155,7 @@ class x3270Script:
             # 'P' - If the field containing the cursor is protected
             # 'U' - If not or un-formatted
             ['protected', 'PU'],
-            [], # 3 - skip here
+            [],  # 3 - skip here
             # 4: Emulator Mode
             # 'I' - If connected in 3270 mode
             # 'L' - If connected in NVT line mode
@@ -166,7 +166,8 @@ class x3270Script:
         ]
 
         for fi in range(5):
-            if fi == 3: continue
+            if fi == 3:
+                continue
 
             if parsed[fi] not in tpl[fi][1]:
                 errors += ',' + tpl[fi][0]
@@ -187,8 +188,8 @@ class x3270Script:
         self.__last_status['model'] = parsed[5]
 
         # 6: Number of Rows
-        #    The current number of rows defined on the screen. The host can request that the emulator use a 24x80 screen,
-        #    so this number may be smaller than the maximum number of rows possible with the current model.
+        #  The current number of rows defined on the screen. The host can request that the emulator use a 24x80 screen,
+        #  so this number may be smaller than the maximum number of rows possible with the current model.
         self.__last_status['rows'] = int(parsed[6]) if parsed[6].isdigit() else -1
 
         # 7: Number of Columns
@@ -204,7 +205,8 @@ class x3270Script:
         self.__last_status['curcol'] = int(parsed[9]) if parsed[9].isdigit() else -1
 
         # 10: Window ID
-        #     The X window identifier for the main x3270 window, in hexadecimal preceded by 0x. For ws3270 and wc3270, this is zero.
+        #   The X window identifier for the main x3270 window, in hex - preceded by 0x.
+        #   For ws3270 and wc3270, this is zero.
         self.__last_status['winid'] = parsed[10]
 
         # 11: Command Execution Time
